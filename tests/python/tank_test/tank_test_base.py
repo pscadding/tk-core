@@ -24,6 +24,7 @@ import threading
 import tempfile
 import contextlib
 import atexit
+from functools import wraps
 
 from collections import defaultdict
 
@@ -127,7 +128,7 @@ def temp_env_var(**kwargs):
 
 class UnitTestTimer(object):
     """
-    Tracks the time spent in various functions.
+    Tracks the time spent in various methods.
     """
 
     class Stat(object):
@@ -160,6 +161,7 @@ class UnitTestTimer(object):
         Creates a decorator with the given name that will track the time spent inside a function.
         """
         def decorator(func):
+            @wraps(func)
             def wrapper(*args, **kwargs):
                 before = time.time()
                 try:
@@ -182,7 +184,7 @@ class UnitTestTimer(object):
             print("{0} : {1} ({2} hits, {3:.3f} avg)".format(name, stat.total_time, stat.nb_invokes, stat.average))
 
         print(
-            "Time spent in setUp/tearDown: %s" % sum(x.total_time for x in self._timers.values())
+            "Time spent in tracked methods: %s" % sum(x.total_time for x in self._timers.values())
         )
 
 timer = UnitTestTimer()
@@ -256,112 +258,13 @@ class TankTestBase(unittest.TestCase):
         self.fixtures_root = os.environ["TK_TEST_FIXTURES"]
 
         self._tear_down_called = False
-
-    SHOTGUN_HOME = "SHOTGUN_HOME"
-
-    def create_file(self, file_path, data=""):
-        """
-        Creates a file on disk with specified data. First the file's directory path will be
-        created, and then a file with contents matching input data.
-
-        :param file_path: Absolute path to the file.
-        :param data: (Optional)Data to be written in the file.
-        """
-        if not file_path.startswith(self.tank_temp):
-            raise Exception("Only files in the test data area should be created with this method.")
-
-        dir_path = os.path.dirname(file_path)
-        if not os.path.exists(dir_path):
-            os.makedirs(dir_path)
-
-        open_file = open(file_path, "w")
-        open_file.write(data)
-        open_file.close()
-
-    def check_error_message(self, error_type, message, func, *args, **kws):
-        """
-        Check that the correct exception is raised with the correct message.
-
-        :param error_type: The exception that is expected.
-        :param message: The expected message on the exception.
-        :param func: The function to call.
-        :param args: Arguments to be passed to the function.
-        :param kws: Keyword arguments passed to the function.
-
-        :rasies: Exception if correct exception is not raised, or the message on the exception
-                 does not match that specified.
-        """
-        self.assertRaises(error_type, func, *args, **kws)
-
-        try:
-            func(*args, **kws)
-        except error_type as e:
-            self.assertEquals(message, str(e))
-
-    def _mock_return_value(self, to_mock, return_value):
-        """
-        Mocks a method with to return a specified return value.
-
-        :param to_mock: Path to the method to mock
-        :param return_value: Value to return from the mocked method.
-        """
-        patch = mock.patch(to_mock, return_value=return_value)
-        patch.start()
         self.addPostTestCleanup(self, patch.stop)
 
     @staticmethod
     def addPostTestCleanup(scope, func):
         scope._cleanup_funcs.append(func)
-
-    def add_to_sg_mock_db(self, entities):
-        """
-        Adds an entity or entities to the mocked shotgun database.
-
-        :param entities: A shotgun style dictionary with keys for id, type, and name
-                         defined. A list of such dictionaries is also valid.
-        """
-        # make sure it's a list
-        if isinstance(entities, dict):
-            entities = [entities]
-        for entity in entities:
-            # entity: {"id": 2, "type":"Shot", "name":...}
-            # wedge it into the mockgun database
-            et = entity["type"]
-            eid = entity["id"]
-
-            # special retired flag for mockgun
-            entity["__retired"] = False
-
-            # turn any dicts into proper type/id/name refs
-            for x in entity:
-                # special case: EventLogEntry.meta is not an entity link dict
-                if isinstance(entity[x], dict) and x != "meta":
-                    # make a std sg link dict with name, id, type
-                    link_dict = {"type": entity[x]["type"], "id": entity[x]["id"]}
-
-                    # most basic case is that there already is a name field,
-                    # in that case we are done
-                    if "name" in entity[x]:
-                        link_dict["name"] = entity[x]["name"]
-
-                    elif entity[x]["type"] == "Task":
-                        # task has a 'code' field called content
-                        link_dict["name"] = entity[x]["content"]
-
-                    elif "code" not in entity[x]:
-                        # auto generate a code field
-                        link_dict["name"] = "mockgun_autogenerated_%s_id_%s" % (entity[x]["type"], entity[x]["id"])
-
-                    else:
-                        link_dict["name"] = entity[x]["code"]
-
-                    # print "Swapping link dict %s -> %s" % (entity[x], link_dict)
-                    entity[x] = link_dict
-
-            self.mockgun._db[et][eid] = entity
-
     @timer.clock_func("TankTestBase.setUp")
-    def setUp(self, parameters=None, do_io=True):
+    def setUp(self, parameters=None):
         """
         Sets up a Shotgun Mockgun instance with a project and a basic project scaffold on
         disk.
@@ -394,6 +297,8 @@ class TankTestBase(unittest.TestCase):
         UserSettings.clear_singleton()
 
         parameters = parameters or {}
+
+        self._do_io = parameters.get("do_io", True)
 
         if "project_tank_name" in parameters:
             project_tank_name = parameters["project_tank_name"]
@@ -476,7 +381,7 @@ class TankTestBase(unittest.TestCase):
 
         self.pipeline_config_root = os.path.join(self.tank_temp, "pipeline_configuration")
 
-        if do_io:
+        if self._do_io:
             # move away previous data
             self._move_project_data()
 
@@ -499,7 +404,7 @@ class TankTestBase(unittest.TestCase):
 
         # create project cache directory
         project_cache_dir = os.path.join(self.pipeline_config_root, "cache")
-        if do_io:
+        if self._do_io:
             os.mkdir(project_cache_dir)
 
         # define entity for pipeline configuration
@@ -518,20 +423,20 @@ class TankTestBase(unittest.TestCase):
                                                              self.sg_pc_entity["id"],
                                                              self.project["id"],
                                                              self.sg_pc_entity["code"]))
-        if do_io:
+        if self._do_io:
             self.create_file(pc_yml, pc_yml_data)
 
         loc_yml = os.path.join(self.pipeline_config_root, "config", "core", "install_location.yml")
         loc_yml_data = "Windows: '%s'\nDarwin: '%s'\nLinux: '%s'" % (
             self.pipeline_config_root, self.pipeline_config_root, self.pipeline_config_root
         )
-        if do_io:
+        if self._do_io:
             self.create_file(loc_yml, loc_yml_data)
 
         # inject this file which toolkit is probing for to determine
         # if an installation has been localized.
         localize_token_file = os.path.join(self.pipeline_config_root, "install", "core", "_core_upgrader.py")
-        if do_io:
+        if self._do_io:
             self.create_file(localize_token_file, "foo bar")
 
         roots = {self.primary_root_name: {}}
@@ -539,7 +444,7 @@ class TankTestBase(unittest.TestCase):
             # TODO make os specific roots
             roots[self.primary_root_name][os_name] = self.tank_temp
 
-        if do_io:
+        if self._do_io:
             roots_path = os.path.join(self.pipeline_config_root, "config", "core", "roots.yml")
             roots_file = open(roots_path, "w")
             roots_file.write(yaml.dump(roots))
@@ -548,7 +453,7 @@ class TankTestBase(unittest.TestCase):
         # clear bundle in-memory cache
         sgtk.descriptor.io_descriptor.factory.g_cached_instances = {}
 
-        if do_io:
+        if self._do_io:
             self.pipeline_configuration = sgtk.pipelineconfig_factory.from_path(self.pipeline_config_root)
             self.tk = tank.Tank(self.pipeline_configuration)
 
@@ -563,7 +468,7 @@ class TankTestBase(unittest.TestCase):
         self._mock_return_value("tank.util.shotgun.create_sg_connection", self.mockgun)
 
         # add project to mock sg and path cache db
-        if do_io:
+        if self._do_io:
             self.add_production_path(self.project_root, self.project)
 
         # add pipeline configuration
@@ -582,6 +487,17 @@ class TankTestBase(unittest.TestCase):
         # back up the authenticated user in case a unit test doesn't clean up correctly.
         self._authenticated_user = sgtk.get_authenticated_user()
 
+    def _mock_return_value(self, to_mock, return_value):
+        """
+        Mocks a method with to return a specified return value.
+
+        :param to_mock: Path to the method to mock
+        :param return_value: Value to return from the mocked method.
+        """
+        patch = mock.patch(to_mock, return_value=return_value)
+        patch.start()
+        self.addCleanup(patch.stop)
+
     def _assert_teardown_called(self):
         """
         Ensures tear down has been called. Called during cleanup, which is executed after tear down.
@@ -589,7 +505,7 @@ class TankTestBase(unittest.TestCase):
         self.assertTrue(self._tear_down_called)
 
     @timer.clock_func("TankTestBase.tearDown")
-    def tearDown(self, do_io=True):
+    def tearDown(self):
         """
         Cleans up after tests.
         """
@@ -598,24 +514,24 @@ class TankTestBase(unittest.TestCase):
             sgtk.set_authenticated_user(self._authenticated_user)
 
             # get rid of path cache from local ~/.shotgun storage
-            if do_io:
+            if self._do_io:
                 pc = path_cache.PathCache(self.tk)
                 path_cache_file = pc._get_path_cache_location()
                 pc.close()
                 if os.path.exists(path_cache_file):
                     os.remove(path_cache_file)
 
+                # get rid of init cache
+                if os.path.exists(pipelineconfig_factory._get_cache_location()):
+                    os.remove(pipelineconfig_factory._get_cache_location())
+
+                # move project scaffold out of the way
+                self._move_project_data()
+                # important to delete this to free memory
+                self.tk = None
+
             # clear global shotgun accessor
             tank.util.shotgun.connection._g_sg_cached_connections = threading.local()
-
-            # get rid of init cache
-            if os.path.exists(pipelineconfig_factory._get_cache_location()):
-                os.remove(pipelineconfig_factory._get_cache_location())
-
-            # move project scaffold out of the way
-            self._move_project_data()
-            # important to delete this to free memory
-            self.tk = None
         finally:
             if self._old_shotgun_home is not None:
                 os.environ[self.SHOTGUN_HOME] = self._old_shotgun_home
@@ -834,6 +750,92 @@ class TankTestBase(unittest.TestCase):
         print("-----------------------------------------------------------------------------")
         print("")
 
+    def add_to_sg_mock_db(self, entities):
+        """
+        Adds an entity or entities to the mocked shotgun database.
+
+        :param entities: A shotgun style dictionary with keys for id, type, and name
+                         defined. A list of such dictionaries is also valid.
+        """
+        # make sure it's a list
+        if isinstance(entities, dict):
+            entities = [entities]
+        for entity in entities:
+            # entity: {"id": 2, "type":"Shot", "name":...}
+            # wedge it into the mockgun database
+            et = entity["type"]
+            eid = entity["id"]
+
+            # special retired flag for mockgun
+            entity["__retired"] = False
+
+            # turn any dicts into proper type/id/name refs
+            for x in entity:
+                # special case: EventLogEntry.meta is not an entity link dict
+                if isinstance(entity[x], dict) and x != "meta":
+                    # make a std sg link dict with name, id, type
+                    link_dict = {"type": entity[x]["type"], "id": entity[x]["id"]}
+
+                    # most basic case is that there already is a name field,
+                    # in that case we are done
+                    if "name" in entity[x]:
+                        link_dict["name"] = entity[x]["name"]
+
+                    elif entity[x]["type"] == "Task":
+                        # task has a 'code' field called content
+                        link_dict["name"] = entity[x]["content"]
+
+                    elif "code" not in entity[x]:
+                        # auto generate a code field
+                        link_dict["name"] = "mockgun_autogenerated_%s_id_%s" % (entity[x]["type"], entity[x]["id"])
+
+                    else:
+                        link_dict["name"] = entity[x]["code"]
+
+                    # print "Swapping link dict %s -> %s" % (entity[x], link_dict)
+                    entity[x] = link_dict
+
+            self.mockgun._db[et][eid] = entity
+
+    def create_file(self, file_path, data=""):
+        """
+        Creates a file on disk with specified data. First the file's directory path will be
+        created, and then a file with contents matching input data.
+
+        :param file_path: Absolute path to the file.
+        :param data: (Optional)Data to be written in the file.
+        """
+        if not file_path.startswith(self.tank_temp):
+            raise Exception("Only files in the test data area should be created with this method.")
+
+        dir_path = os.path.dirname(file_path)
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path)
+
+        open_file = open(file_path, "w")
+        open_file.write(data)
+        open_file.close()
+
+    def check_error_message(self, error_type, message, func, *args, **kws):
+        """
+        Check that the correct exception is raised with the correct message.
+
+        :param error_type: The exception that is expected.
+        :param message: The expected message on the exception.
+        :param func: The function to call.
+        :param args: Arguments to be passed to the function.
+        :param kws: Keyword arguments passed to the function.
+
+        :rasies: Exception if correct exception is not raised, or the message on the exception
+                 does not match that specified.
+        """
+        self.assertRaises(error_type, func, *args, **kws)
+
+        try:
+            func(*args, **kws)
+        except error_type as e:
+            self.assertEquals(message, str(e))
+
     def _move_project_data(self):
         """
         Calls _move_data for all project roots.
@@ -973,7 +975,6 @@ ClassLevelTankTestBase = create_class_level_tank_test_base()
 class TankTestSimple(TankTestBase):
 
     def setUp(self, parameters=None):
-        super(TankTestSimple, self).setUp(parameters, do_io=False)
-
-    def tearDown(self, do_io=True):
-        super(TankTestSimple, self).tearDown(do_io=False)
+        parameters = parameters or {}
+        parameters["do_io"] = False
+        super(TankTestSimple, self).setUp(parameters)
