@@ -2200,7 +2200,7 @@ class Engine(TankBundle):
         # a couple of styling quirks in the tank dialog header when it's
         # used with the fusion style.
         app.setStyleSheet(
-            ".QWidget { font-size: 11px; }"
+            'QWidget { font-size: 11px; font-family: "Open Sans"; }'
         )
 
     def __initialize_dark_look_and_feel_qt4(self):
