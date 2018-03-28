@@ -919,7 +919,7 @@ class SetupProjectAction(Action):
         for (root_name, storage_name) in mapped_roots:
 
             root_info = required_roots[root_name]
-            storage_data = storage_by_name[storage_name]
+            storage_data = storage_by_name[storage_name.lower()]
 
             # populate the data defined prior to mapping
             updated_storage_data = root_info
